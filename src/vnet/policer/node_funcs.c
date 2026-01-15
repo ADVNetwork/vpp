@@ -278,6 +278,27 @@ VNET_FEATURE_INIT (policer_input_node, static) = {
   .runs_before = VNET_FEATURES ("ethernet-input"),
 };
 
+VNET_FEATURE_INIT (policer_input_ip4_unicast_node, static) = {
+  .arc_name = "ip4-unicast",
+  .node_name = "policer-input",
+  .runs_before = VNET_FEATURES ("det44-in2out")
+};
+
+VNET_FEATURE_INIT (policer_input_ip6_unicast_node, static) = {
+  .arc_name = "ip6-unicast",
+  .node_name = "policer-input",
+};
+
+VNET_FEATURE_INIT (policer_input_ip4_multicast_node, static) = {
+  .arc_name = "ip4-multicast",
+  .node_name = "policer-input",
+};
+
+VNET_FEATURE_INIT (policer_input_ip6_multicast_node, static) = {
+  .arc_name = "ip6-multicast",
+  .node_name = "policer-input",
+};
+
 VLIB_NODE_FN (policer_output_node)
 (vlib_main_t *vm, vlib_node_runtime_t *node, vlib_frame_t *frame)
 {

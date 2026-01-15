@@ -1521,6 +1521,16 @@ ip4_local_check_src (vlib_buffer_t *b, ip4_header_t *ip0,
     vnet_buffer (b)->sw_if_index[VLIB_TX] != ~0 ?
     vnet_buffer (b)->sw_if_index[VLIB_TX] : vnet_buffer (b)->ip.fib_index;
 
+  if (pool_is_free_index (ip4_fibs, vnet_buffer (b)->ip.fib_index))
+    {
+      *error0 = IP4_ERROR_SRC_LOOKUP_MISS;
+      last_check->src.as_u32 = ip0->src_address.as_u32;
+      last_check->error = *error0;
+      last_check->first = 0;
+      last_check->fib_index = vnet_buffer (b)->ip.fib_index;
+      return;
+    }
+
   vnet_buffer (b)->ip.rx_sw_if_index = vnet_buffer (b)->sw_if_index[VLIB_RX];
   if (is_receive_dpo)
     {

@@ -138,7 +138,19 @@ fib_urpf_check_size (index_t ui)
 {
     fib_urpf_list_t *urpf;
 
+    // Check if the provided uRPF list index is invalid
+    if (PREDICT_FALSE(INDEX_INVALID == ui))
+       return (0);
+
     urpf = fib_urpf_list_get(ui);
+
+    // Check if the uRPF list is NULL
+    if (PREDICT_FALSE(NULL == urpf))
+       return (0);
+
+    // Check if the interface list in the uRPF list is NULL
+    if (PREDICT_FALSE(NULL == urpf->furpf_itfs))
+       return (0);
 
     return (vec_len(urpf->furpf_itfs));
 }

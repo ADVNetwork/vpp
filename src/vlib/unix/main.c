@@ -54,6 +54,10 @@
 #include <sys/resource.h>
 #include <unistd.h>
 
+#if VLIB_SYSTEMD_NOTIFY_ENABLED
+#include <systemd/sd-daemon.h>
+#endif
+
 #ifdef HAVE_LIBIBERTY
 #include <libiberty/demangle.h>
 #endif
@@ -78,6 +82,27 @@ unix_main_init (vlib_main_t * vm)
 }
 
 VLIB_INIT_FUNCTION (unix_main_init);
+
+#if VLIB_SYSTEMD_NOTIFY_ENABLED
+static void
+vlib_unix_systemd_notify_ready (void)
+{
+  unix_main_t *um = &unix_main;
+
+  /* Only notify if configured to do so */
+  if (um->flags & UNIX_FLAG_SYSTEMD_NOTIFY)
+    {
+      /* Notify systemd that we are ready */
+      int rc = sd_notify (0, "READY=1");
+      if (rc < 0)
+	{
+	  clib_warning ("systemd sd_notify failed: %s", strerror (-rc));
+	}
+      /* rc > 0 means successfully notified, rc == 0 means not running under
+       * systemd or notifications disabled - both are normal, no logging */
+    }
+}
+#endif /* VLIB_SYSTEMD_NOTIFY_ENABLED */
 
 static int
 unsetup_signal_handlers (int sig)
@@ -358,6 +383,12 @@ startup_config_process (vlib_main_t * vm,
 
   if (!um->startup_config_filename)
     {
+#if VLIB_SYSTEMD_NOTIFY_ENABLED
+      /* Notify systemd that VPP is fully ready.
+       * This ensures dependent services only start after VPP is fully configured
+       * and ready to process packets. */
+      vlib_unix_systemd_notify_ready ();
+#endif
       return 0;
     }
 
@@ -367,6 +398,13 @@ startup_config_process (vlib_main_t * vm,
   vlib_cli_input (vm, &in, 0, 0);
 
   unformat_free (&in);
+
+#if VLIB_SYSTEMD_NOTIFY_ENABLED
+  /* Notify systemd that VPP is fully ready after configuration is loaded.
+   * This ensures dependent services only start after VPP is fully configured
+   * and ready to process packets. */
+  vlib_unix_systemd_notify_ready ();
+#endif
 
   return 0;
 }
@@ -405,6 +443,10 @@ unix_config (vlib_main_t * vm, unformat_input_t * input)
 	um->flags |= UNIX_FLAG_NOCOLOR;
       else if (unformat (input, "nobanner"))
 	um->flags |= UNIX_FLAG_NOBANNER;
+#if VLIB_SYSTEMD_NOTIFY_ENABLED
+      else if (unformat (input, "systemd-notify"))
+	um->flags |= UNIX_FLAG_SYSTEMD_NOTIFY;
+#endif
       else if (unformat (input, "cli-prompt %s", &cli_prompt))
 	vlib_unix_cli_set_prompt (cli_prompt);
       else
@@ -595,6 +637,13 @@ unix_config (vlib_main_t * vm, unformat_input_t * input)
  * *
  * @cfgcmd{nobanner}
  * Do not display startup banner.
+ *
+ * @cfgcmd{systemd-notify}
+ * Enable systemd notification when VPP is fully initialized and ready.
+ * Allows systemd to properly track VPP startup and manage service dependencies.
+ * This option is only available if VPP was built with systemd support
+ * (VPP_ENABLE_SYSTEMD_NOTIFY=ON). If not built with this support, the option
+ * will be ignored.
  *
  * @cfgcmd{exec, &lt;filename&gt;}
  * @par <code>startup-config &lt;filename&gt;</code>

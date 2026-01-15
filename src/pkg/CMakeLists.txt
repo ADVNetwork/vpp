@@ -51,6 +51,12 @@ foreach(l ${os_release})
 endforeach()
 
 set(VPP_DEB_BUILD_DEPENDS "python3-all, python3-setuptools")
+
+# Add systemd build dependency if systemd notify support is enabled
+if(VPP_ENABLE_SYSTEMD_NOTIFY)
+  set(VPP_DEB_BUILD_DEPENDS "${VPP_DEB_BUILD_DEPENDS}, libsystemd-dev")
+endif()
+
 set(VPP_DEB_WITH_PYTHON2 "no")
 
 foreach(f rules changelog control)

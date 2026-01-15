@@ -45,6 +45,18 @@ typedef struct
 
 #define PPPOE_VER_TYPE 0x11
 #define PPPOE_PADS 0x65
+#define PPPOE_PADT 0xa7
+#define PPP_PROTOCOL_IPCP 0x8021
+#define PPP_PROTOCOL_IPV6CP 0x8057
+#define PPP_LCP_ECHO_REQUEST 0x09
+#define PPP_LCP_ECHO_REPLY 0x0a
+#define PPP_IPCP_CONFIGURE_NAK 0x03
+#define PPP_IPCP_OPTION_IP_ADDRESS 0x03
+#define PPP_IPCP_OPTION_IP_ADDRESS_LENGTH 6
+#define PPP_IPV6CP_CONFIGURE_ACK 0x02
+#define PPP_IPV6CP_CONFIGURE_NAK 0x03
+#define PPP_IPV6CP_OPTION_INTERFACE_IDENTIFIER 0x01
+#define PPP_IPV6CP_OPTION_INTERFACE_IDENTIFIER_LENGTH 10
 
 typedef struct
 {
@@ -56,6 +68,8 @@ typedef struct
 
   /* session client addresses */
   ip46_address_t client_ip;
+  ip46_address_t client_ip6;
+  u8 prefix_length_ip6;
 
   /* the index of tx interface for pppoe encaped packet */
   u32 encap_if_index;
@@ -69,6 +83,9 @@ typedef struct
   /* vnet intfc index */
   u32 sw_if_index;
   u32 hw_if_index;
+
+  u32 lcp_echo_cnt;
+  u32 lcp_echo_reply_cnt;
 
 } pppoe_session_t;
 
@@ -162,8 +179,14 @@ typedef struct
   /* Mapping from sw_if_index to session index */
   u32 *session_index_by_sw_if_index;
 
-  /* used for pppoe cp path */
-  u32 cp_if_index;
+  /* Mapping from DP sw_if_index to CP sw_if_index */
+  u32 *cp_if_index_by_sw_if_index;
+
+  /* Mapping from CP sw_if_index to DP sw_if_index */
+  u32 *dp_if_index_by_sw_if_index;
+
+  /* Mapping from session id to IPv6 identifier */
+  u64 *ip6_ident_by_session_id;
 
   /* API message ID base */
   u16 msg_id_base;
@@ -171,6 +194,9 @@ typedef struct
   /* convenience */
   vlib_main_t *vlib_main;
   vnet_main_t *vnet_main;
+
+  u8 is_auto_discovery;
+  u8 is_pass_nd_and_dhcpv6;
 
 } pppoe_main_t;
 
@@ -185,14 +211,18 @@ typedef struct
   u8 is_ip6;
   u16 session_id;
   ip46_address_t client_ip;
+  u8 prefix_length;
   u32 encap_if_index;
   u32 decap_fib_index;
   u8 local_mac[6];
   u8 client_mac[6];
+  bool disable_fib;
 } vnet_pppoe_add_del_session_args_t;
 
 int vnet_pppoe_add_del_session
   (vnet_pppoe_add_del_session_args_t * a, u32 * sw_if_indexp);
+
+void vnet_pppoe_add_del_session_cb (vnet_pppoe_add_del_session_args_t *a);
 
 typedef struct
 {
@@ -201,7 +231,7 @@ typedef struct
   u32 cp_if_index;
 } vnet_pppoe_add_del_tap_args_t;
 
-int pppoe_add_del_cp (u32 cp_if_index, u8 is_add);
+int pppoe_add_del_cp (u32 cp_if_index, u32 dp_if_index, u8 is_add);
 
 always_inline u64
 pppoe_make_key (u8 * mac_address, u16 session_id)
@@ -266,6 +296,7 @@ pppoe_learn_process (BVT (clib_bihash) * table,
   BVT (clib_bihash_kv) kv;
   kv.key = key0->raw;
   kv.value = result0->raw;
+  CLIB_MEMORY_BARRIER();
   BV (clib_bihash_add_del) (table, &kv, 1 /* is_add */ );
 }
 
@@ -294,6 +325,7 @@ pppoe_lookup_1 (BVT (clib_bihash) * table,
 
       kv.key = key0->raw;
       kv.value = ~0ULL;
+      CLIB_MEMORY_BARRIER();
       BV (clib_bihash_search_inline) (table, &kv);
       result0->raw = kv.value;
 
@@ -318,8 +350,26 @@ pppoe_update_1 (BVT (clib_bihash) * table,
   BVT (clib_bihash_kv) kv;
   kv.key = key0->raw;
   kv.value = result0->raw;
+  CLIB_MEMORY_BARRIER();
   BV (clib_bihash_add_del) (table, &kv, 1 /* is_add */ );
 
+}
+
+static_always_inline void
+pppoe_delete_1 (BVT (clib_bihash) * table, u8 *mac0, u16 session_id0,
+		pppoe_entry_key_t *key0, u32 *bucket0,
+		pppoe_entry_result_t *result0)
+{
+  /* set up key */
+  key0->raw = pppoe_make_key (mac0, session_id0);
+  *bucket0 = ~0;
+
+  /* Delete the entry */
+  BVT (clib_bihash_kv) kv;
+  kv.key = key0->raw;
+  kv.value = result0->raw;
+  CLIB_MEMORY_BARRIER();
+  BV (clib_bihash_add_del) (table, &kv, 0 /* is_add */);
 }
 #endif /* _PPPOE_H */
 

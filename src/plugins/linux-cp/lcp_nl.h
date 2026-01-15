@@ -30,6 +30,11 @@ typedef void (*nl_rt_route_add_cb_t) (struct rtnl_route *rn, int is_replace);
 typedef void (*nl_rt_route_del_cb_t) (struct rtnl_route *rn);
 typedef void (*nl_rt_route_sync_cb_t) (void);
 
+/**
+ * Resync with Linux state
+ */
+extern void lcp_resync_state (vlib_main_t *vm);
+
 #define NL_RT_COMMON uword is_mp_safe
 
 typedef struct nl_rt_link_t_

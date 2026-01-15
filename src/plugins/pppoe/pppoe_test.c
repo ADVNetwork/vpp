@@ -259,7 +259,8 @@ api_pppoe_add_del_cp (vat_main_t * vam)
   unformat_input_t *line_input = vam->input;
   vl_api_pppoe_add_del_cp_t *mp;
   u8 is_add = 1;
-  u32 sw_if_index = ~0;
+  u32 cp_sw_if_index = ~0;
+  u32 dp_sw_if_index = ~0;
   int ret;
 
   while (unformat_check_input (line_input) != UNFORMAT_END_OF_INPUT)
@@ -268,14 +269,17 @@ api_pppoe_add_del_cp (vat_main_t * vam)
 	{
 	  is_add = 0;
 	}
-      else if (unformat (line_input, "cp-if-index %d", &sw_if_index))
+      else if (unformat (line_input, "cp-if-index %d", &cp_sw_if_index))
+	;
+      else if (unformat (line_input, "dp-if-index %d", &dp_sw_if_index))
 	;
     }
 
   M (PPPOE_ADD_DEL_CP, mp);
 
   mp->is_add = is_add;
-  mp->sw_if_index = sw_if_index;
+  mp->cp_sw_if_index = cp_sw_if_index;
+  mp->dp_sw_if_index = dp_sw_if_index;
 
   S (mp);
   W (ret);

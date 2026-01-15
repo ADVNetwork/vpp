@@ -12,6 +12,7 @@
 # limitations under the License.
 
 option(VPP_BUFFER_FAULT_INJECTOR "Include the buffer fault injector" OFF)
+option(VPP_ENABLE_SYSTEMD_NOTIFY "Enable systemd notify support" OFF)
 
 ##############################################################################
 # Generate vlib/config.h
@@ -20,6 +21,22 @@ if(VPP_BUFFER_FAULT_INJECTOR)
   set(BUFFER_ALLOC_FAULT_INJECTOR 1 CACHE STRING "fault injector on")
 else()
   set(BUFFER_ALLOC_FAULT_INJECTOR 0 CACHE STRING "fault injector off")
+endif()
+
+if(VPP_ENABLE_SYSTEMD_NOTIFY)
+  # Check for systemd library
+  vpp_find_path(SYSTEMD_INCLUDE_DIR systemd/sd-daemon.h)
+  vpp_find_library(SYSTEMD_LIB NAMES systemd)
+  
+  if(SYSTEMD_INCLUDE_DIR AND SYSTEMD_LIB)
+    message(STATUS "systemd found at ${SYSTEMD_LIB}")
+    set(SYSTEMD_NOTIFY_ENABLED 1 CACHE STRING "systemd notify enabled")
+  else()
+    message(WARNING "VPP_ENABLE_SYSTEMD_NOTIFY is ON but systemd library not found")
+    set(SYSTEMD_NOTIFY_ENABLED 0 CACHE STRING "systemd notify disabled")
+  endif()
+else()
+  set(SYSTEMD_NOTIFY_ENABLED 0 CACHE STRING "systemd notify disabled")
 endif()
 
 if(VPP_PLATFORM_BUFFER_ALIGN)
@@ -72,6 +89,10 @@ set(PLATFORM_SOURCES
 endif()
 
 set(VLIB_LIBS vppinfra svm ${CMAKE_DL_LIBS} ${EPOLL_LIB})
+
+if(SYSTEMD_NOTIFY_ENABLED)
+  list(APPEND VLIB_LIBS ${SYSTEMD_LIB})
+endif()
 
 vpp_find_path(LIBIBERTY_INCLUDE_DIR libiberty/demangle.h)
 vpp_find_library(LIBIBERTY_LIB NAMES iberty libiberty)

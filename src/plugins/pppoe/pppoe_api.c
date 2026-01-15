@@ -56,6 +56,7 @@ static void vl_api_pppoe_add_del_session_t_handler
     .is_add = mp->is_add,
     .decap_fib_index = decap_fib_index,
     .session_id = ntohs (mp->session_id),
+    .disable_fib = mp->disable_fib,
   };
   ip_address_decode (&mp->client_ip, &a.client_ip);
   clib_memcpy (a.client_mac, mp->client_mac, 6);
@@ -142,7 +143,8 @@ vl_api_pppoe_add_del_cp_t_handler (vl_api_pppoe_add_del_cp_t * mp)
   i32 rv = 0;
   pppoe_main_t *pem = &pppoe_main;
 
-  rv = pppoe_add_del_cp (ntohl (mp->sw_if_index), mp->is_add);
+  rv = pppoe_add_del_cp (ntohl (mp->cp_sw_if_index),
+			 ntohl (mp->dp_sw_if_index), mp->is_add);
 
   REPLY_MACRO(VL_API_PPPOE_ADD_DEL_CP_REPLY);
 }

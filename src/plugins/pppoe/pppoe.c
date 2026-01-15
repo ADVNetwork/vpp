@@ -21,6 +21,7 @@
 
 #include <vlib/vlib.h>
 #include <vlib/unix/unix.h>
+#include <vlib/init.h>
 #include <vnet/ethernet/ethernet.h>
 #include <vnet/fib/fib_entry.h>
 #include <vnet/fib/fib_table.h>
@@ -45,10 +46,12 @@ format_pppoe_session (u8 * s, va_list * args)
   pppoe_session_t *t = va_arg (*args, pppoe_session_t *);
   pppoe_main_t *pem = &pppoe_main;
 
-  s = format (s, "[%d] sw-if-index %d client-ip %U session-id %d ",
-	      t - pem->sessions, t->sw_if_index,
-	      format_ip46_address, &t->client_ip, IP46_TYPE_ANY,
-	      t->session_id);
+  s = format (s, "[%d] sw-if-index %d client-ip4 %U client-ip6 %U/%d session-id %d ",
+        t - pem->sessions, t->sw_if_index,
+        format_ip46_address, &t->client_ip, IP46_TYPE_ANY,
+        format_ip46_address, &t->client_ip6, IP46_TYPE_ANY,
+        t->prefix_length_ip6,
+        t->session_id);
 
   s = format (s, "encap-if-index %d decap-fib-index %d\n",
 	      t->encap_if_index, t->decap_fib_index);
@@ -412,13 +415,14 @@ int vnet_pppoe_add_del_session
       vnet_set_interface_l3_output_node (vnm->vlib_main, sw_if_index,
 					 (u8 *) "tunnel-output");
 
-      /* add reverse route for client ip */
-      fib_table_entry_path_add (a->decap_fib_index, &pfx,
-				pppoe_fib_src, FIB_ENTRY_FLAG_NONE,
-				fib_proto_to_dpo (pfx.fp_proto),
-				&pfx.fp_addr, sw_if_index, ~0,
-				1, NULL, FIB_ROUTE_PATH_FLAG_NONE);
-
+      if (!a->disable_fib)
+	{
+	  /* add reverse route for client ip */
+	  fib_table_entry_path_add (
+	    a->decap_fib_index, &pfx, pppoe_fib_src, FIB_ENTRY_FLAG_NONE,
+	    fib_proto_to_dpo (pfx.fp_proto), &pfx.fp_addr, sw_if_index, ~0, 1,
+	    NULL, FIB_ROUTE_PATH_FLAG_NONE);
+	}
     }
   else
     {
@@ -462,6 +466,252 @@ int vnet_pppoe_add_del_session
   return 0;
 }
 
+static void
+vnet_pppoe_create_interface (vnet_pppoe_add_del_session_args_t *a,
+			     pppoe_main_t *pem, pppoe_entry_key_t *key,
+			     pppoe_entry_result_t *result)
+{
+  vnet_main_t *vnm = pem->vnet_main;
+  u32 hw_if_index = ~0;
+  u32 sw_if_index = ~0;
+  u32 bucket = 0;
+  pppoe_session_t *t = 0;
+
+  /* Allocate and initialize the session */
+  pool_get_aligned (pem->sessions, t, CLIB_CACHE_LINE_BYTES);
+  clib_memset (t, 0, sizeof (*t));
+
+  /* Copy fields from the argument structure */
+#define _(x) t->x = a->x;
+  foreach_copy_field;
+#undef _
+
+  memset (&t->client_ip, 0, sizeof (t->client_ip));
+
+  clib_memcpy (t->client_mac, a->client_mac, 6);
+  clib_memcpy (t->local_mac, a->local_mac, 6);
+
+  /* Update PPPoE FIB with session index */
+  result->fields.session_index = t - pem->sessions;
+  pppoe_update_1 (&pem->session_table, a->client_mac,
+		  clib_host_to_net_u16 (a->session_id), key, &bucket, result);
+
+  hw_if_index =
+    vnet_register_interface (vnm, pppoe_device_class.index, t - pem->sessions,
+			     pppoe_hw_class.index, t - pem->sessions);
+  vnet_hw_interface_t *hi = vnet_get_hw_interface (vnm, hw_if_index);
+
+  t->hw_if_index = hw_if_index;
+  t->sw_if_index = sw_if_index = hi->sw_if_index;
+
+  vec_validate_init_empty (pem->session_index_by_sw_if_index, sw_if_index, ~0);
+  pem->session_index_by_sw_if_index[sw_if_index] = t - pem->sessions;
+
+  vnet_sw_interface_t *si = vnet_get_sw_interface (vnm, sw_if_index);
+  si->flags &= ~VNET_SW_INTERFACE_FLAG_HIDDEN;
+  vnet_sw_interface_set_flags (vnm, sw_if_index,
+			       VNET_SW_INTERFACE_FLAG_ADMIN_UP);
+  vnet_set_interface_l3_output_node (vnm->vlib_main, sw_if_index,
+				     (u8 *) "tunnel-output");
+}
+
+static void
+vnet_pppoe_set_features_and_fib (vnet_pppoe_add_del_session_args_t *a,
+				 pppoe_main_t *pem, pppoe_entry_key_t *key,
+				 pppoe_entry_result_t *result)
+{
+  pppoe_session_t *t;
+  u32 sw_if_index = ~0;
+  fib_prefix_t pfx = { 0 };
+
+  clib_memset (&pfx, 0, sizeof (pfx));
+
+  t = pool_elt_at_index (pem->sessions, result->fields.session_index);
+  sw_if_index = t->sw_if_index;
+
+  if (a->is_ip6)
+    {
+      clib_memcpy (&t->client_ip6, &a->client_ip, sizeof (t->client_ip6));
+      t->prefix_length_ip6 = a->prefix_length;
+
+      vnet_feature_enable_disable ("ip6-unicast", "ip6-not-enabled",
+				   sw_if_index, 0, 0, 0);
+
+      clib_memcpy (&pfx.fp_addr.ip6, &t->client_ip6, sizeof (pfx.fp_addr.ip6));
+      pfx.fp_len = 128;
+      pfx.fp_proto = FIB_PROTOCOL_IP6;
+    }
+  else
+    {
+      t->client_ip.ip4.as_u32 = a->client_ip.ip4.as_u32;
+
+      vnet_feature_enable_disable ("ip4-unicast", "ip4-not-enabled",
+				   sw_if_index, 0, 0, 0);
+
+      pfx.fp_addr.ip4.as_u32 = a->client_ip.ip4.as_u32;
+      pfx.fp_len = 32;
+      pfx.fp_proto = FIB_PROTOCOL_IP4;
+    }
+
+  /* add reverse route for client ip */
+  fib_table_entry_path_add (
+    a->decap_fib_index, &pfx, pppoe_fib_src, FIB_ENTRY_FLAG_NONE,
+    fib_proto_to_dpo (pfx.fp_proto), &pfx.fp_addr, sw_if_index, ~0, 1, NULL,
+    FIB_ROUTE_PATH_FLAG_NONE);
+}
+
+static void
+vnet_pppoe_del_session (vnet_pppoe_add_del_session_args_t *a,
+			pppoe_main_t *pem, pppoe_entry_key_t *key,
+			pppoe_entry_result_t *result)
+{
+  u32 bucket = 0;
+  pppoe_session_t *t =
+    pool_elt_at_index (pem->sessions, result->fields.session_index);
+  vnet_main_t *vnm = pem->vnet_main;
+  u32 sw_if_index = t->sw_if_index;
+  fib_prefix_t pfx = { 0 };
+
+  /* Delete reverse route for client IP (IPv4) if it exists */
+  if (t->client_ip.ip4.as_u32 != 0)
+    {
+      pfx.fp_addr.ip4.as_u32 = t->client_ip.ip4.as_u32;
+      pfx.fp_len = 32;
+      pfx.fp_proto = FIB_PROTOCOL_IP4;
+
+      fib_table_entry_path_remove (t->decap_fib_index, &pfx, pppoe_fib_src,
+				   fib_proto_to_dpo (pfx.fp_proto),
+				   &pfx.fp_addr, sw_if_index, ~0, 1,
+				   FIB_ROUTE_PATH_FLAG_NONE);
+    }
+
+  /* Delete reverse route for client IP (IPv6) if it exists */
+  if (t->client_ip6.ip6.as_u64[0] != 0 || t->client_ip6.ip6.as_u64[1] != 0)
+    {
+      clib_memcpy (&pfx.fp_addr.ip6, &t->client_ip6, sizeof (pfx.fp_addr.ip6));
+      pfx.fp_len = 128;
+      pfx.fp_proto = FIB_PROTOCOL_IP6;
+
+      fib_table_entry_path_remove (t->decap_fib_index, &pfx, pppoe_fib_src,
+				   fib_proto_to_dpo (pfx.fp_proto),
+				   &pfx.fp_addr, sw_if_index, ~0, 1,
+				   FIB_ROUTE_PATH_FLAG_NONE);
+    }
+
+  /* Reset interface L3 output node and set interface flags */
+  vnet_reset_interface_l3_output_node (vnm->vlib_main, sw_if_index);
+  vnet_sw_interface_set_flags (vnm, t->sw_if_index, 0 /* down */);
+  vnet_sw_interface_t *si = vnet_get_sw_interface (vnm, t->sw_if_index);
+  si->flags |= VNET_SW_INTERFACE_FLAG_HIDDEN;
+
+  pem->session_index_by_sw_if_index[t->sw_if_index] = ~0;
+
+  /* Remove the hardware interface */
+  vnet_delete_hw_interface (vnm, t->hw_if_index);
+
+  /* Delete PPPoE FIB with session index */
+  result->fields.session_index = ~0;
+  pppoe_delete_1 (&pem->session_table, a->client_mac,
+		  clib_host_to_net_u16 (a->session_id), key, &bucket, result);
+
+  pool_put (pem->sessions, t);
+}
+
+void
+vnet_pppoe_add_del_session_cb (vnet_pppoe_add_del_session_args_t *a)
+{
+  pppoe_main_t *pem = &pppoe_main;
+  pppoe_entry_key_t cached_key = { 0 };
+  pppoe_entry_key_t key = { 0 };
+  pppoe_entry_result_t cached_result = { 0 };
+  pppoe_entry_result_t result = { 0 };
+  u32 bucket = 0;
+  u32 tmp = 0;
+
+  cached_key.raw = ~0;
+  cached_result.raw = ~0; /* warning be gone */
+
+  /* Get encap_if_index and local mac address from link_table */
+  pppoe_lookup_1 (&pem->link_table, &cached_key, &cached_result, a->client_mac,
+		  0, &key, &bucket, &result);
+  a->encap_if_index = result.fields.sw_if_index;
+
+  if (a->encap_if_index == ~0)
+    {
+      clib_warning ("Lookup failed: Client MAC: %U", format_ethernet_address,
+		    a->client_mac);
+      return;
+    }
+
+  /* lookup session_table */
+  pppoe_lookup_1 (&pem->session_table, &cached_key, &cached_result,
+		  a->client_mac, clib_host_to_net_u16 (a->session_id), &key,
+		  &bucket, &result);
+
+  /* learn client session */
+  pppoe_learn_process (&pem->session_table, a->encap_if_index, &key,
+		       &cached_key, &bucket, &result);
+
+  if (a->is_add)
+    {
+      /* adding a session: session must not already exist */
+      if (result.fields.session_index != ~0)
+	{
+	  vnet_pppoe_set_features_and_fib (a, pem, &key, &result);
+	  return;
+	}
+
+      if (a->is_ip6)
+	a->decap_fib_index = fib_table_find (FIB_PROTOCOL_IP6, tmp);
+      else
+	a->decap_fib_index = fib_table_find (FIB_PROTOCOL_IP4, tmp);
+
+      /* if not set explicitly, default to ip4 */
+      if (!pppoe_decap_next_is_valid (pem, a->is_ip6, a->decap_fib_index))
+	{
+	  clib_warning ("Invalid decap next for decap_fib_index: %d",
+			a->decap_fib_index);
+	  return;
+	}
+
+      vnet_pppoe_create_interface (a, pem, &key, &result);
+      vnet_pppoe_set_features_and_fib (a, pem, &key, &result);
+    }
+  else
+    {
+      /* deleting a session: session must exist */
+      if (result.fields.session_index == ~0)
+	{
+	  clib_warning ("Session does not exist with session_id: %d",
+			a->session_id);
+	  return;
+	}
+
+      vnet_pppoe_del_session (a, pem, &key, &result);
+    }
+}
+
+void vnet_delete_all_pppoe_sessions(void)
+{
+  pppoe_main_t *pem = &pppoe_main;
+  pppoe_session_t *t;
+  vnet_pppoe_add_del_session_args_t _a, *a = &_a;
+  clib_memset(a, 0, sizeof(*a));
+  a->is_add = 0;
+
+  pool_foreach(t, pem->sessions)
+  {
+    a->session_id = t->session_id;
+    a->client_ip = t->client_ip;
+    a->encap_if_index = t->encap_if_index;
+    a->decap_fib_index = t->decap_fib_index;
+    clib_memcpy(a->client_mac, t->client_mac, 6);
+    a->is_ip6 = (t->client_ip.ip6.as_u64[0] != 0 || t->client_ip.ip6.as_u64[1] != 0);
+
+    vnet_pppoe_add_del_session(a, NULL);
+  }
+}
+
 static clib_error_t *
 pppoe_add_del_session_command_fn (vlib_main_t * vm,
 				  unformat_input_t * input,
@@ -471,6 +721,7 @@ pppoe_add_del_session_command_fn (vlib_main_t * vm,
   u16 session_id = 0;
   ip46_address_t client_ip;
   u8 is_add = 1;
+  u8 disable_fib = 0;
   u8 client_ip_set = 0;
   u8 ipv4_set = 0;
   u8 ipv6_set = 0;
@@ -496,6 +747,10 @@ pppoe_add_del_session_command_fn (vlib_main_t * vm,
       if (unformat (line_input, "del"))
 	{
 	  is_add = 0;
+	}
+      else if (unformat (line_input, "disable-fib"))
+	{
+	  disable_fib = 1;
 	}
       else if (unformat (line_input, "session-id %d", &session_id))
 	;
@@ -561,6 +816,7 @@ pppoe_add_del_session_command_fn (vlib_main_t * vm,
 
   a->is_add = is_add;
   a->is_ip6 = ipv6_set;
+  a->disable_fib = disable_fib;
 
 #define _(x) a->x = x;
   foreach_copy_field;
@@ -613,25 +869,53 @@ VLIB_CLI_COMMAND (create_pppoe_session_command, static) = {
   .path = "create pppoe session",
   .short_help =
   "create pppoe session client-ip <client-ip> session-id <nn>"
-  " client-mac <client-mac> [decap-vrf-id <nn>] [del]",
+  " client-mac <client-mac> [decap-vrf-id <nn>] [del] [disable-fib]",
   .function = pppoe_add_del_session_command_fn,
 };
 
 static clib_error_t *
-show_pppoe_session_command_fn (vlib_main_t * vm,
-			       unformat_input_t * input,
-			       vlib_cli_command_t * cmd)
+delete_all_pppoe_sessions_command_fn (vlib_main_t * vm,
+                    unformat_input_t * input,
+                    vlib_cli_command_t * cmd)
+{
+  vnet_delete_all_pppoe_sessions();
+  vlib_cli_output (vm, "All PPPoE sessions have been deleted.");
+  return 0;
+}
+
+/*?
+ * Delete all PPPoE Sessions.
+ *
+ * @cliexpar
+ * Example of how to delete all PPPoE Sessions:
+ * @cliexcmd{delete pppoe sessions}
+ ?*/
+VLIB_CLI_COMMAND (delete_all_pppoe_sessions_command, static) = {
+  .path = "delete pppoe sessions",
+  .short_help = "delete pppoe sessions",
+  .function = delete_all_pppoe_sessions_command_fn,
+};
+
+static clib_error_t *
+show_pppoe_session_command_fn (vlib_main_t *vm, unformat_input_t *input,
+			       vlib_cli_command_t *cmd)
 {
   pppoe_main_t *pem = &pppoe_main;
   pppoe_session_t *t;
+  u32 session_count = pool_elts (pem->sessions);
 
-  if (pool_elts (pem->sessions) == 0)
-    vlib_cli_output (vm, "No pppoe sessions configured...");
+  if (session_count == 0)
+    {
+      vlib_cli_output (vm, "No pppoe sessions configured...");
+      return 0;
+    }
+
+  vlib_cli_output (vm, "Number of PPPoE sessions: %u", session_count);
 
   pool_foreach (t, pem->sessions)
-		 {
-		    vlib_cli_output (vm, "%U",format_pppoe_session, t);
-		}
+    {
+      vlib_cli_output (vm, "%U", format_pppoe_session, t);
+    }
 
   return 0;
 }
@@ -693,8 +977,8 @@ pppoe_show_walk_cb (BVT (clib_bihash_kv) * kvp, void *arg)
 
 /** Display the contents of the PPPoE Fib. */
 static clib_error_t *
-show_pppoe_fib_command_fn (vlib_main_t * vm,
-			   unformat_input_t * input, vlib_cli_command_t * cmd)
+show_pppoe_fib_command_fn (vlib_main_t *vm, unformat_input_t *input,
+			   vlib_cli_command_t *cmd)
 {
   pppoe_main_t *pem = &pppoe_main;
   pppoe_show_walk_ctx_t ctx = {
@@ -702,13 +986,11 @@ show_pppoe_fib_command_fn (vlib_main_t * vm,
     .vm = vm,
   };
 
-  BV (clib_bihash_foreach_key_value_pair)
-    (&pem->session_table, pppoe_show_walk_cb, &ctx);
+  BV (clib_bihash_foreach_key_value_pair) (&pem->session_table,
+					   pppoe_show_walk_cb, &ctx);
 
-  if (ctx.total_entries == 0)
-    vlib_cli_output (vm, "no pppoe fib entries");
-  else
-    vlib_cli_output (vm, "%lld pppoe fib entries", ctx.total_entries);
+  if (ctx.total_entries != 0)
+    vlib_cli_output (vm, "Total PPPoE FIB entries: %lld", ctx.total_entries);
 
   return 0;
 }
@@ -732,6 +1014,27 @@ VLIB_CLI_COMMAND (show_pppoe_fib_command, static) = {
     .short_help = "show pppoe fib",
     .function = show_pppoe_fib_command_fn,
 };
+
+static clib_error_t *
+pppoe_config (vlib_main_t *vm, unformat_input_t *input)
+{
+  pppoe_main_t *pem = &pppoe_main;
+
+  while (unformat_check_input (input) != UNFORMAT_END_OF_INPUT)
+    {
+      if (unformat (input, "enable-auto-discovery"))
+	pem->is_auto_discovery = 1;
+      else if (unformat (input, "enable-pass-nd-and-dhcpv6"))
+	pem->is_pass_nd_and_dhcpv6 = 1;
+      else
+	return clib_error_return (0, "invalid pppoe option: %U",
+				  format_unformat_error, input);
+    }
+
+  return NULL;
+}
+
+VLIB_CONFIG_FUNCTION (pppoe_config, "pppoe");
 
 clib_error_t *
 pppoe_init (vlib_main_t * vm)

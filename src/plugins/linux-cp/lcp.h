@@ -33,6 +33,7 @@ typedef struct lcp_main_s
   u8 test_mode;	      /* Set when Unit testing */
   u8 netlink_processing_active; /* Set while a batch of Netlink messages are
 				   being processed */
+  u8 route_no_paths; /* Add routes with no paths as local */
 } lcp_main_t;
 
 extern lcp_main_t lcp_main;
@@ -68,6 +69,12 @@ u8 lcp_get_netlink_processing_active (void);
  */
 void lcp_set_default_num_queues (u16 num_queues, u8 is_tx);
 u16 lcp_get_default_num_queues (u8 is_tx);
+
+/**
+ * Get/Set whether to install routes with no paths as local
+ */
+void lcp_set_route_no_paths (u8 is_del);
+u8 lcp_get_route_no_paths (void);
 
 #endif
 

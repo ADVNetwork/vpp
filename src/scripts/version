@@ -43,7 +43,11 @@ fi
 
 git rev-parse 2> /dev/null
 if [ $? == 0 ]; then
-    CMT=$(git describe --dirty --long --match 'v*'| cut -s -d- -f3,4)
+    # Additional variables for VyOS versioning
+    COMMIT_HASH=$(git rev-parse --short HEAD)
+    COMMIT_DATE=$(TZ=UTC git --no-pager log -1 --format=%ad --date=format:%Y%m%d%H%M%S)
+    DIRTY=$(git diff-index --quiet HEAD -- && echo "" || echo ".dirty")
+    CMT="vyos${COMMIT_DATE}.${COMMIT_HASH}${DIRTY}"
 else
     CMT=$(echo ${vstring} | cut -s -d- -f3,4)
 fi
