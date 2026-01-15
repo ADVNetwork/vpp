@@ -28,7 +28,7 @@ rdma-core_tarball             := rdma-core-$(rdma-core_version).tar.gz
 rdma-core_tarball_sha256sum_55.0 := 6f8b97267807cdae54845f542ee3d75de80fdc24fe2632f5db1573ecef132d0f
 rdma-core_tarball_sha256sum      := $(rdma-core_tarball_sha256sum_$(rdma-core_version))
 rdma-core_tarball_strip_dirs  := 1
-rdma-core_url                 := http://github.com/linux-rdma/rdma-core/releases/download/v$(rdma-core_version)/$(rdma-core_tarball)
+rdma-core_url                 := https://github.com/linux-rdma/rdma-core/releases/download/v$(rdma-core_version)/$(rdma-core_tarball)
 
 RDMA_BUILD_TYPE:=RelWithDebInfo
 ifeq ($(RDMA_CORE_DEBUG),y)

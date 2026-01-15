@@ -19,7 +19,7 @@ ipsec-mb_tarball_sha256sum_2.0  := 0c60e56f63b14212c7b388668acc219cbc6b79e5e7973
 
 ipsec-mb_tarball_sha256sum   := $(ipsec-mb_tarball_sha256sum_$(ipsec-mb_version))
 ipsec-mb_tarball_strip_dirs  := 1
-ipsec-mb_url                 := http://github.com/intel/intel-ipsec-mb/archive/$(ipsec-mb_tarball)
+ipsec-mb_url                 := https://github.com/intel/intel-ipsec-mb/archive/$(ipsec-mb_tarball)
 ipsec-mb_system_header       := $(wildcard /usr/include/intel-ipsec-mb.h)
 
 define  ipsec-mb_config_cmds
